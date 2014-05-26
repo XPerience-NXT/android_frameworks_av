@@ -2101,7 +2101,16 @@ void AudioFlinger::PlaybackThread::invalidateTracks(audio_stream_type_t streamTy
 
 void AudioFlinger::PlaybackThread::onFatalError()
 {
-    invalidateTracks(AUDIO_STREAM_MUSIC);
+    size_t size = mTracks.size();
+    for (size_t i = 0; i < size; i++) {
+        sp<Track> t = mTracks[i];
+        if ((t->streamType() == AUDIO_STREAM_MUSIC)
+               && (t->isOffloaded())) {
+            //call invalidate for offload tracks
+            t->invalidate();
+        }
+    }
+
 }
 
 
@@ -2473,6 +2482,9 @@ bool AudioFlinger::PlaybackThread::threadLoop()
                 if (mBytesRemaining) {
                     ssize_t ret = threadLoop_write();
                     if (ret < 0) {
+                        mBytesRemaining = 0;
+                    } else if(ret > mBytesRemaining) {
+                        mBytesWritten += mBytesRemaining;
                         mBytesRemaining = 0;
                     } else {
                         mBytesWritten += ret;
