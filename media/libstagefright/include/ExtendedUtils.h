@@ -86,6 +86,13 @@ struct ExtendedUtils {
         // Adjust clip timescale for authoring, if HFR is enabled
         static int32_t getHFRRatio(
                 const sp<MetaData> &meta);
+
+        private:
+        // Query supported capabilities from target-specific profiles
+        static int32_t getHFRCapabilities(
+                video_encoder codec,
+                int& maxHFRWidth, int& maxHFRHeight, int& maxHFRFps,
+                int& maxBitrate);
     };
 
     /*
@@ -160,6 +167,8 @@ struct ExtendedUtils {
 
     //helper function to parse rtp port range form system property
     static void parseRtpPortRangeFromSystemProperty(unsigned *start, unsigned *end);
+
+    static void updateOutputBitWidth(sp<MetaData> format, bool isOffload);
 };
 
 class VSyncLocker : public RefBase {

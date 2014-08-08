@@ -93,7 +93,6 @@ static const size_t kHighWaterMarkBytes = 200000;
 #ifdef QCOM_DIRECTTRACK
 int AwesomePlayer::mTunnelAliveAP = 0;
 #endif
-static int64_t kVideoEarlyMarginUs = -10000LL;
 
 // maximum time in paused state when offloading audio decompression. When elapsed, the AudioPlayer
 // is destroyed to allow the audio DSP to power down.
@@ -1081,6 +1080,9 @@ status_t AwesomePlayer::play_l() {
             }
 
             if (err != OK) {
+                mAudioSource.clear();
+                mOmxSource.clear();
+
                 delete mAudioPlayer;
                 mAudioPlayer = NULL;
 
@@ -1154,15 +1156,17 @@ status_t AwesomePlayer::fallbackToSWDecoder() {
     if (!(mFlags & AUDIOPLAYER_STARTED)) {
         mAudioSource->stop();
     }
+    mAudioSource.clear();
     modifyFlags((AUDIO_RUNNING | AUDIOPLAYER_STARTED), CLEAR);
     mOffloadAudio = false;
+#ifdef ENABLE_AV_ENHANCEMENTS
+    // no 24-bit for fallback
+    ExtendedUtils::updateOutputBitWidth(mAudioSource->getFormat(), false);
+#endif
+
     mAudioSource = mOmxSource;
     if (mAudioSource != NULL) {
-        err = mAudioSource->start();
-
-        if (err != OK) {
-            mAudioSource.clear();
-        } else {
+        if ((err = mAudioSource->start()) == OK) {
             mSeekNotificationSent = true;
             if (mExtractorFlags & MediaExtractor::CAN_SEEK) {
                 seekTo_l(curTimeUs);
@@ -2333,6 +2337,9 @@ void AwesomePlayer::onVideoEvent() {
             ALOGE("Failed to fallback to SW decoder err = %d", err);
             notifyListener_l(MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, err);
 
+            mAudioSource.clear();
+            mOmxSource.clear();
+
             delete mAudioPlayer;
             mAudioPlayer = NULL;
 
@@ -2356,6 +2363,7 @@ void AwesomePlayer::onVideoEvent() {
         ((mFlags & AUDIO_AT_EOS) || !(mFlags & AUDIOPLAYER_STARTED))
             ? &mSystemTimeSource : mTimeSource;
     int64_t systemTimeUs = mSystemTimeSource.getRealTimeUs();
+    int64_t looperTimeUs = ALooper::GetNowUs();
 
     if (mFlags & FIRST_FRAME) {
         modifyFlags(FIRST_FRAME, CLEAR);
@@ -2377,9 +2385,6 @@ void AwesomePlayer::onVideoEvent() {
     int64_t realTimeUs, mediaTimeUs, nowUs = 0, latenessUs = 0;
     if (!(mFlags & AUDIO_AT_EOS) && mAudioPlayer != NULL
         && mAudioPlayer->getMediaTimeMapping(&realTimeUs, &mediaTimeUs)) {
-        ALOGV("updating TSdelta (%" PRId64 " => %" PRId64 " change %" PRId64 ")",
-              mTimeSourceDeltaUs, realTimeUs - mediaTimeUs,
-              mTimeSourceDeltaUs - (realTimeUs - mediaTimeUs));
         ATRACE_INT("TS delta change (ms)", (mTimeSourceDeltaUs - (realTimeUs - mediaTimeUs)) / 1E3);
         mTimeSourceDeltaUs = realTimeUs - mediaTimeUs;
     }
@@ -2479,15 +2484,14 @@ void AwesomePlayer::onVideoEvent() {
             }
         }
 
-        if (latenessUs < -10000) {
-            // We're more than 10ms early.
+        if (latenessUs < -30000) {
             logOnTime(timeUs,nowUs,latenessUs);
             {
                 Mutex::Autolock autoLock(mStatsLock);
                 mStats.mConsecutiveFramesDropped = 0;
             }
-            postVideoEvent_l((kVideoEarlyMarginUs - latenessUs) > 40000LL ?
-                                40000LL : (kVideoEarlyMarginUs - latenessUs));
+            // We're more than 30ms early, schedule at most 20 ms before time due
+            postVideoEvent_l(latenessUs < -60000 ? 30000 : -latenessUs - 20000);
             return;
         }
     }
@@ -2505,6 +2509,8 @@ void AwesomePlayer::onVideoEvent() {
         if (mVSyncLocker != NULL) {
             mVSyncLocker->blockOnVSync();
         }
+
+        mVideoBuffer->meta_data()->setInt64(kKeyTime, looperTimeUs - latenessUs);
 
         mVideoRenderer->render(mVideoBuffer);
         if (!mVideoRenderingStarted) {
@@ -2578,8 +2584,9 @@ void AwesomePlayer::onVideoEvent() {
         CHECK(mVideoBuffer->meta_data()->findInt64(kKeyTime, &nextTimeUs));
         systemTimeUs = mSystemTimeSource.getRealTimeUs();
         int64_t delayUs = nextTimeUs - estimateRealTimeUs(ts, systemTimeUs) + mTimeSourceDeltaUs;
-        ATRACE_INT("Video postDelay", delayUs < 0 ? 1 : delayUs);
-        postVideoEvent_l(delayUs > 10000 ? 10000 : delayUs < 0 ? 0 : delayUs);
+        ATRACE_INT("Frame delta (ms)", (nextTimeUs - timeUs) / 1E3);
+        // try to schedule 30ms before time due
+        postVideoEvent_l(delayUs > 60000 ? 30000 : (delayUs < 30000 ? 0 : delayUs - 30000));
         return;
     }
 
@@ -3419,8 +3426,20 @@ bool AwesomePlayer::isWidevineContent() const {
 
 status_t AwesomePlayer::dump(int fd, const Vector<String16> &args) const {
     Mutex::Autolock autoLock(mStatsLock);
+    int dfd = dup(fd);
 
-    FILE *out = fdopen(dup(fd), "w");
+    if (dfd < 0) {
+        ALOGE("dump: failed to dup file descriptor");
+        return -errno;
+    }
+
+    FILE *out = fdopen(dfd, "w");
+
+    if (!out) {
+        ALOGE("dump: failed to open file");
+        close(dfd);
+        return -ENOMEM;
+    }
 
     fprintf(out, " AwesomePlayer\n");
     if (mStats.mFd < 0) {
