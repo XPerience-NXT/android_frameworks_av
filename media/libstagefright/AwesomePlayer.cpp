@@ -65,7 +65,7 @@
 #include <media/stagefright/MetaData.h>
 #include <media/stagefright/OMXCodec.h>
 #include <media/stagefright/Utils.h>
-#ifdef QCOM_HARDWARE
+#if defined(QCOM_HARDWARE) || defined(ENABLE_OFFLOAD_ENHANCEMENTS)
 #include "include/ExtendedUtils.h"
 #endif
 
@@ -386,9 +386,7 @@ status_t AwesomePlayer::setDataSource_l(
     reset_l();
 
     mUri = uri;
-    if (uri) {
-        printFileName(uri);
-    }
+    ExtendedUtils::printFileName(uri);
 
 #ifdef ENABLE_AV_ENHANCEMENTS
     ExtendedUtils::prefetchSecurePool(uri);
@@ -430,7 +428,7 @@ status_t AwesomePlayer::setDataSource(
     ALOGD("Before reset_l");
     reset_l();
     if (fd) {
-       printFileName(fd);
+       ExtendedUtils::printFileName(fd);
     }
 
 #ifdef ENABLE_AV_ENHANCEMENTS
@@ -1080,6 +1078,10 @@ status_t AwesomePlayer::play_l() {
             }
 
             if (err != OK) {
+                if ((mAudioPlayer == NULL || !(mFlags & AUDIOPLAYER_STARTED))
+                        && mAudioSource != NULL) {
+                    mAudioSource->stop();
+                }
                 mAudioSource.clear();
                 mOmxSource.clear();
 
@@ -1156,7 +1158,7 @@ status_t AwesomePlayer::fallbackToSWDecoder() {
     if (!(mFlags & AUDIOPLAYER_STARTED)) {
         mAudioSource->stop();
     }
-#ifdef ENABLE_AV_ENHANCEMENTS
+#if defined(ENABLE_AV_ENHANCEMENTS) || defined(ENABLE_OFFLOAD_ENHANCEMENTS)
     // no 24-bit for fallback
     ExtendedUtils::updateOutputBitWidth(mAudioSource->getFormat(), false);
 #endif
@@ -1660,7 +1662,13 @@ status_t AwesomePlayer::getPosition(int64_t *positionUs) {
         Mutex::Autolock autoLock(mMiscStateLock);
         *positionUs = mVideoTimeUs;
     } else if (mAudioPlayer != NULL) {
-        *positionUs = mAudioPlayer->getMediaTimeUs();
+        Mutex::Autolock autoLock(mMiscStateLock);
+        if (mAudioTearDownPosition == 0) {
+            *positionUs = mAudioPlayer->getMediaTimeUs();
+        } else {
+            /* AudioTearDown in progress */
+            *positionUs = mAudioTearDownPosition;
+        }
     } else {
         *positionUs = mAudioTearDownPosition;
     }
@@ -2340,6 +2348,10 @@ void AwesomePlayer::onVideoEvent() {
             ALOGE("Failed to fallback to SW decoder err = %d", err);
             notifyListener_l(MEDIA_ERROR, MEDIA_ERROR_UNKNOWN, err);
 
+            if ((mAudioPlayer == NULL || !(mFlags & AUDIOPLAYER_STARTED))
+                    && mAudioSource != NULL) {
+                mAudioSource->stop();
+            }
             mAudioSource.clear();
             mOmxSource.clear();
 
@@ -3070,6 +3082,7 @@ void AwesomePlayer::finishAsyncPrepare_l() {
         if (mPrepareResult == OK) {
             if (mExtractorFlags & MediaExtractor::CAN_SEEK) {
                 seekTo_l(mAudioTearDownPosition);
+                mAudioTearDownPosition = 0;
             }
 
             if (mAudioTearDownWasPlaying) {
@@ -3545,7 +3558,6 @@ void AwesomePlayer::onAudioTearDownEvent() {
 
     // stream info is cleared by reset_l() so copy what we need
     mAudioTearDownWasPlaying = (mFlags & PLAYING);
-    uint32_t loopingFlags = (mFlags & (LOOPING | AUTO_LOOPING));
     KeyedVector<String8, String8> uriHeaders(mUriHeaders);
     sp<DataSource> fileSource(mFileSource);
 
@@ -3574,8 +3586,6 @@ void AwesomePlayer::onAudioTearDownEvent() {
         // a MEDIA_ERROR to the client and abort the prepare
         mFlags |= PREPARE_CANCELLED;
     }
-
-    mFlags |= loopingFlags;
 
     mAudioTearDown = true;
     mIsAsyncPrepare = true;

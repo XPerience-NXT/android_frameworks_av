@@ -99,22 +99,18 @@ ifneq ($(filter caf bfam,$(TARGET_QCOM_AUDIO_VARIANT)),)
     ifeq ($(BOARD_USES_LEGACY_ALSA_AUDIO),true)
         ifeq ($(call is-chipset-in-board-platform,msm8960),true)
             LOCAL_SRC_FILES += LPAPlayerALSA.cpp TunnelPlayer.cpp
-            LOCAL_CFLAGS += -DUSE_TUNNEL_MODE -DUSE_LPA_MODE
+            LOCAL_CFLAGS += -DUSE_TUNNEL_MODE
             LOCAL_CFLAGS += -DTUNNEL_MODE_SUPPORTS_AMRWB
         endif
         ifeq ($(call is-chipset-in-board-platform,msm8974),true)
             # If you are using legacy mode on 8974, you will not
             # go to space today. Also, it probably is broken.
             LOCAL_SRC_FILES += LPAPlayerALSA.cpp TunnelPlayer.cpp
-            LOCAL_CFLAGS += -DUSE_TUNNEL_MODE -DUSE_LPA_MODE
+            LOCAL_CFLAGS += -DUSE_TUNNEL_MODE
         endif
-        ifeq ($(call is-chipset-in-board-platform,msm8660),true)
+        ifneq ($(filter msm8660 msm7x30 msm7x27a,$(TARGET_BOARD_PLATFORM)),)
             LOCAL_SRC_FILES += LPAPlayer.cpp
-            LOCAL_CFLAGS += -DLEGACY_LPA -DUSE_LPA_MODE
-        endif
-        ifeq ($(call is-chipset-in-board-platform,msm7x30),true)
-            LOCAL_SRC_FILES += LPAPlayer.cpp
-            LOCAL_CFLAGS += -DLEGACY_LPA -DUSE_LPA_MODE
+            LOCAL_CFLAGS += -DLEGACY_LPA
         endif
         ifeq ($(call is-chipset-in-board-platform,msm7x27a),true)
             LOCAL_SRC_FILES += LPAPlayer.cpp
@@ -191,7 +187,11 @@ ifeq ($(TARGET_ENABLE_QC_AV_ENHANCEMENTS),true)
             $(TOP)/hardware/qcom/media/mm-core/inc
     endif
 
-endif #TARGET_ENABLE_AV_ENHANCEMENTS
+else #TARGET_ENABLE_AV_ENHANCEMENTS
+ifeq ($(TARGET_ENABLE_OFFLOAD_ENHANCEMENTS),true)
+    LOCAL_CFLAGS += -DENABLE_OFFLOAD_ENHANCEMENTS
+endif
+endif
 
 LOCAL_SRC_FILES += \
         chromium_http_stub.cpp
